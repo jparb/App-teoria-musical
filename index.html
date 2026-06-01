@@ -73,6 +73,11 @@ select:focus,input[type=text]:focus{border-color:var(--amber)}
 .piano-chord-grid{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:12px}
 .piano-chord-item{display:flex;flex-direction:column;align-items:center;gap:4px}
 .piano-chord-lbl{font-size:9px;color:var(--tx2);font-family:'Courier New',monospace}
+.chord-sec-hdr{width:100%;font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--tx2);margin:4px 0 8px;display:flex;align-items:center;gap:8px}
+.chord-sec-hdr::after{content:'';flex:1;height:1px;background:var(--bd)}
+.chord-sec-pop .chord-sec-hdr{color:var(--amber)}
+.chord-sec-alt .chord-sec-hdr{color:var(--tx2)}
+.chord-sec{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:18px}
 .perr{color:var(--red);font-size:12px;padding:10px 0}
 @media (max-width: 600px) {
   body{padding:.75rem}
@@ -564,7 +569,10 @@ function renderScale(){
       const note=(open+f)%12;if(!tones.has(note))continue;
       const x=f===0?LP-20:LP+(f-.5)*FG,y=sy[v];
       const isR=note===root,dg=(note-root+12)%12,dl=DEG[dg];
-      const fill=isR?'#f4a300':'#162240',strk=isR?'#f4a300':'#5b8af5',tc=isR?'#000':'#c8d8ff';
+      const isRootLowE=isR&&v===5; // root on 6th string (low E) → red
+      const fill=isRootLowE?'#e24b4a':isR?'#f4a300':'#162240';
+      const strk=isRootLowE?'#e24b4a':isR?'#f4a300':'#5b8af5';
+      const tc=isR?'#000':'#c8d8ff';
       svg+=`<circle cx="${x}" cy="${y}" r="${CR}" fill="${fill}" stroke="${strk}" stroke-width="1.5"><title>${dN(note)} \u2014 ${dl}</title></circle>`;
       svg+=`<text x="${x}" y="${y+3.5}" text-anchor="middle" fill="${tc}" font-size="${dl.length>2?7:8}" font-family="'Courier New',monospace" font-weight="bold" pointer-events="none">${dl}</text>`;
     }
@@ -587,18 +595,22 @@ function findBarre(v){
   const minF=Math.min(...fretted);
   const minStr=frets.indexOf(minF),maxStr=frets.lastIndexOf(minF);
   if(minStr===maxStr)return null;
-  for(let i=minStr;i<=maxStr;i++){if(frets[i]<0)return null;}
+  for(let i=minStr;i<=maxStr;i++){if(frets[i]<=0)return null;}  // no muted OR open strings in span
   return{fret:minF,from:minStr,to:maxStr};
 }
 // Count actual fingers needed (barre = 1 finger)
 function countFingers(grip){
+  // Each individually fretted string needs its own finger.
+  // A detected barre collapses all barre-fret strings into 1 finger.
   const barre=findBarre(grip);
-  const frets=grip.filter(x=>x&&x.fret>0).map(x=>x.fret);
-  if(!frets.length)return 0;
+  const frettedStrings=grip.filter(x=>x&&x.fret>0);
+  if(!frettedStrings.length)return 0;
   if(barre){
-    return 1+new Set(frets.filter(f=>f!==barre.fret)).size;
+    // 1 finger for the barre + 1 per string above the barre fret
+    return 1+frettedStrings.filter(x=>x.fret!==barre.fret).length;
   }
-  return new Set(frets).size;
+  // No barre: every fretted string is a separate finger
+  return frettedStrings.length;
 }
 function genAtPosition(root,formula,pos,span){
   const uT=[...new Set(formula.map(i=>(root+i)%12))];
@@ -691,6 +703,47 @@ function invLbl(v,root,formula){
   const barre=findBarre(v);
   return bl+(barre?` \u00b7 Cejilla ${barre.fret}`:'');
 }
+
+// Scores a voicing by how 'standard/popular' it is for guitar
+// Higher = more commonly found on chord charts, more ergonomic
+function voicingScore(v, root) {
+  const allFrets = v.map(x => x ? x.fret : -1);
+  const frettedPos = allFrets.filter(f => f > 0);
+  const hasOpen = allFrets.some(f => f === 0);
+  const minFret = frettedPos.length ? Math.min(...frettedPos) : 0;
+  const maxFret = frettedPos.length ? Math.max(...frettedPos) : 0;
+  const stringCount = allFrets.filter(f => f >= 0).length;
+  const barre = findBarre(v);
+  const bassNote = v.find(x => x !== null);
+  const isRootBass = bassNote && bassNote.note === root;
+  let score = 0;
+  // Open chord shapes – most popular on the internet (CAGED open forms)
+  if (hasOpen && maxFret <= 4) score += 55;
+  else if (hasOpen && maxFret <= 6) score += 30;
+  else if (hasOpen) score += 15;
+  // Full barre chords (E-shape: all 6 strings; A-shape: 5 strings)
+  if (barre) {
+    const barreSpan = barre.to - barre.from; // number of additional strings covered
+    if (barreSpan >= 4) score += 40; // full 5-6 string barre (standard E/A shape)
+    else if (barreSpan >= 3) score += 20; // partial barre (B-shape, etc.)
+    else score += 8;
+  }
+  // Low position = easier, more ergonomic
+  if (minFret === 0) score += 0; // already handled by open
+  else if (minFret <= 3) score += 18;
+  else if (minFret <= 5) score += 10;
+  else if (minFret <= 7) score += 4;
+  else if (minFret > 9) score -= 18;
+  // Root in bass (fundamental position – the 'default' chord shown on charts)
+  if (isRootBass) score += 18;
+  // More strings = fuller sound, more strummable, more commonly taught
+  if (stringCount >= 5) score += 10;
+  else if (stringCount === 4) score += 2;
+  else score -= 8; // 3-string jazz voicings
+  return score;
+}
+const POP_THRESHOLD = 50;
+
 function renderChords(){
   const root=+document.getElementById('cr').value;
   const ct=document.getElementById('ct').value;
@@ -702,7 +755,15 @@ function renderChords(){
   const vs=genVoicings(root,f);
   const grid=document.getElementById('cg');
   if(!vs.length){grid.innerHTML='<div style="padding:30px;color:var(--tx2);font-size:13px">Sin digitaciones con 4 dedos encontradas.</div>';return;}
-  grid.innerHTML=vs.map(v=>`<div class="cbw">${drawBox(v,root,f)}<div class="cbl">${invLbl(v,root,f)}</div></div>`).join('');
+  // Score and split into popular / alternative
+  const scored=vs.map(v=>({v,score:voicingScore(v,root)})).sort((a,b)=>b.score-a.score);
+  const pop=scored.filter(x=>x.score>=POP_THRESHOLD).map(x=>x.v);
+  const alt=scored.filter(x=>x.score<POP_THRESHOLD).map(x=>x.v);
+  function renderGroup(list){return list.map(v=>`<div class="cbw">${drawBox(v,root,f)}<div class="cbl">${invLbl(v,root,f)}</div></div>`).join('');}
+  let html='';
+  if(pop.length)html+=`<div class="chord-sec-pop"><div class="chord-sec-hdr">★ Posiciones populares <span style="font-size:9px;font-weight:400;opacity:.6">${pop.length}</span></div><div class="chord-sec">${renderGroup(pop)}</div></div>`;
+  if(alt.length)html+=`<div class="chord-sec-alt"><div class="chord-sec-hdr">☆ Alternativas <span style="font-size:9px;font-weight:400;opacity:.6">${alt.length}</span></div><div class="chord-sec">${renderGroup(alt)}</div></div>`;
+  grid.innerHTML=html;
 }
 
 // MODULE 3: SUBSTITUTIONS & ENRICHMENT
